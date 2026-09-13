@@ -1,6 +1,6 @@
 import { Injectable, signal } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
-import { BehaviorSubject, Observable } from 'rxjs';
+import { BehaviorSubject, Observable, firstValueFrom } from 'rxjs';
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, RTL_LANGUAGE, STORAGE_KEYS } from '../constants';
 import { StorageUtil, DomUtil } from '../utils';
 
@@ -22,7 +22,9 @@ export class LanguageService {
   private switchTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private translateService: TranslateService) {
-    this.initializeTranslation();
+    // Initialization is deferred to initialize() which is called by
+    // APP_INITIALIZER — this blocks app startup until translations are
+    // loaded, so components never render with raw keys on first paint.
   }
 
   /**
@@ -37,18 +39,46 @@ export class LanguageService {
   }
 
   /**
-   * Initialize translation service
+   * Bootstrap-time initialization. Called by APP_INITIALIZER so translations
+   * are loaded and cached BEFORE any component renders — preventing raw keys
+   * from flashing on first paint.
    */
-  private initializeTranslation(): void {
+  async initialize(): Promise<void> {
     this.translateService.addLangs([...SUPPORTED_LANGUAGES]);
-    // Do NOT call setDefaultLang() here. It triggers a concurrent
-    // getTranslation(DEFAULT_LANGUAGE) that races with the initial language
-    // load on ngx-translate's shared this.loadingTranslations / this.pending
-    // fields, corrupting the cache. use() sets both currentLang and defaultLang
-    // on its own (defaultLang starts null). The default is promoted to
-    // DEFAULT_LANGUAGE inside doLanguageSwitch once it's already cached, so
-    // setDefaultLang() finds it in the cache and triggers no new HTTP request.
-    this.setLanguage(this.currentLanguage$.value, false);
+    const lang = this.getInitialLanguage();
+    this.applyDocumentLanguage(lang);
+    StorageUtil.set(STORAGE_KEYS.LANGUAGE, lang);
+
+    const cached = this.translateService.translations[lang];
+    if (cached && Object.keys(cached).length === 0) {
+      this.translateService.resetLang(lang);
+    }
+
+    try {
+      await firstValueFrom(this.translateService.use(lang));
+      this.currentLanguage$.next(lang);
+      // Promote DEFAULT_LANGUAGE as the fallback default once it's cached
+      // (setDefaultLang finds it in the cache — no new HTTP, no race).
+      if (lang === DEFAULT_LANGUAGE &&
+          this.translateService.defaultLang !== DEFAULT_LANGUAGE) {
+        this.translateService.setDefaultLang(DEFAULT_LANGUAGE);
+      }
+    } catch {
+      // If the initial language fails to load, fall back to DEFAULT_LANGUAGE
+      if (lang === DEFAULT_LANGUAGE) {
+        this.currentLanguage$.next(lang);
+        return;
+      }
+      this.applyDocumentLanguage(DEFAULT_LANGUAGE);
+      StorageUtil.set(STORAGE_KEYS.LANGUAGE, DEFAULT_LANGUAGE);
+      this.translateService.resetLang(DEFAULT_LANGUAGE);
+      try {
+        await firstValueFrom(this.translateService.use(DEFAULT_LANGUAGE));
+      } catch {
+        // Last resort — app starts with empty translations
+      }
+      this.currentLanguage$.next(DEFAULT_LANGUAGE);
+    }
   }
 
   /**

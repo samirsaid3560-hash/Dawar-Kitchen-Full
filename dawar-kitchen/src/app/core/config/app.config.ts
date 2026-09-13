@@ -1,4 +1,4 @@
-import { ApplicationConfig, isDevMode, importProvidersFrom } from '@angular/core';
+import { ApplicationConfig, isDevMode, importProvidersFrom, APP_INITIALIZER } from '@angular/core';
 import { provideRouter, withInMemoryScrolling, withPreloading, PreloadAllModules } from '@angular/router';
 import { environment } from '../../../environments/environment';
 import { provideHttpClient, withFetch, withInterceptors, HttpClient } from '@angular/common/http';
@@ -9,6 +9,15 @@ import { map, catchError } from 'rxjs/operators';
 import { TranslateModule, TranslateLoader } from '@ngx-translate/core';
 import { routes } from './app.routes';
 import { authInterceptor, errorInterceptor, languageInterceptor } from '../interceptors';
+import { LanguageService } from '../../shared/services';
+
+/**
+ * APP_INITIALIZER factory — blocks app startup until translations are loaded
+ * so components never render with raw translation keys on first paint.
+ */
+function initializeI18n(languageService: LanguageService): () => Promise<void> {
+  return () => languageService.initialize();
+}
 
 export class MultiTranslateHttpLoader implements TranslateLoader {
   private readonly files = ['common', 'home', 'menu', 'reservations', 'auth', 'contact', 'payment'];
@@ -62,6 +71,14 @@ export const appConfig: ApplicationConfig = {
           deps: [HttpClient]
         }
       })
-    )
+    ),
+    // ✅ Block app startup until translations are loaded — prevents raw keys
+    // from flashing on first paint.
+    {
+      provide: APP_INITIALIZER,
+      useFactory: initializeI18n,
+      deps: [LanguageService],
+      multi: true
+    }
   ]
 };
